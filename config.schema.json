@@ -19,7 +19,7 @@
         "type": "string",
         "required": true,
         "format": "uri",
-        "placeholder": "http://192.168.0.25:9000",
+        "placeholder": "http://YOUR-LMS-IP:9000",
         "description": "Full URL to your LMS server including port (default port is 9000)"
       },
       "updateInterval": {

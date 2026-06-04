@@ -11,7 +11,6 @@ Automatically discovers all LMS players on your network and exposes them to Appl
 - **Auto-discovery** — finds all LMS players automatically, no manual configuration per player
 - **Play / Stop** — via a Fan accessory (on = play, off = stop)
 - **Volume control** — fan speed maps directly to volume (0–100)
-- **Pause support** — via SmartSpeaker service (play / pause / stop)
 - **Real-time status** — polls LMS every 5 seconds to keep HomeKit in sync
 - **Siri compatible** — "Hey Siri, turn on Kitchen Radio", "set Kitchen Radio to 50%"
 - **Automation compatible** — works as a trigger and action in HomeKit automations
@@ -22,14 +21,13 @@ Automatically discovers all LMS players on your network and exposes them to Appl
 
 ## How It Appears in HomeKit
 
-Each LMS player appears as **two linked services**:
+Each LMS player appears as a **Fan accessory**:
 
-| Service | What it controls |
+| Control | Action |
 |---|---|
-| **Fan** | On/Off = Play/Stop · Fan speed = Volume |
-| **SmartSpeaker** | Play / Pause / Stop media state |
-
-The Fan is the primary accessory Siri and automations interact with. The SmartSpeaker service adds explicit Pause (distinct from Stop).
+| Fan on | Start playback |
+| Fan off | Stop playback |
+| Fan speed (0–100) | Volume |
 
 ---
 
@@ -70,7 +68,7 @@ Configure via the Homebridge UI plugin settings, or add the following to your `c
     {
       "platform": "LMSPlatform",
       "name": "Lyrion Media Server",
-      "serverurl": "http://192.168.0.25:9000",
+      "serverurl": "http://YOUR-LMS-IP:9000",
       "updateInterval": 5,
       "debug": false
     }
@@ -97,7 +95,6 @@ Once added to HomeKit, you can control your players with Siri:
 | "Hey Siri, turn on Kitchen Radio" | Start playback |
 | "Hey Siri, turn off Kitchen Radio" | Stop playback |
 | "Hey Siri, set Kitchen Radio to 50%" | Set volume to 50 |
-| "Hey Siri, pause Kitchen Radio" | Pause playback |
 
 ---
 
