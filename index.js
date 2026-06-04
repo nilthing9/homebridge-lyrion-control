@@ -1,225 +1,328 @@
-'use strict';
+/**
+ * homebridge-lyrion-control
+ * Homebridge platform plugin for Lyrion Media Server (LMS) / Squeezebox
+ *
+ * Each LMS player is exposed as:
+ *   - Fanv2 service  → Active = play/stop,  RotationSpeed = volume 0–100
+ *   - SmartSpeaker   → CurrentMediaState / TargetMediaState (play/pause/stop)
+ *
+ * Both services stay in sync. Fan is what Siri and automations act on primarily.
+ * SmartSpeaker adds explicit Pause support that a fan switch cannot express.
+ *
+ * NOTE: HAP v2+ removed named constants on CurrentMediaState / TargetMediaState.
+ * We use raw numeric values per the HAP spec directly.
+ *   CurrentMediaState: PLAYING=0, PAUSED=1, STOPPED=2, LOADING=3, INTERRUPTION=4
+ *   TargetMediaState:  PLAY=0,    PAUSE=1,  STOP=2
+ */
 
-const axios = require('axios');
+"use strict";
 
-let Service, Characteristic, UUIDGen, Categories;
+const axios = require("axios");
+
+// HAP media state constants (safe across all HAP versions)
+const CurrentMediaState = { PLAYING: 0, PAUSED: 1, STOPPED: 2, LOADING: 3, INTERRUPTION: 4 };
+const TargetMediaState  = { PLAY: 0, PAUSE: 1, STOP: 2 };
+
+let Service, Characteristic, Categories;
 
 module.exports = (api) => {
   Service = api.hap.Service;
   Characteristic = api.hap.Characteristic;
-  UUIDGen = api.hap.uuid;
   Categories = api.hap.Categories;
-
-  api.registerPlatform(
-    'homebridge-lms',
-    'LMSPlatform',
-    LMSPlatform
-  );
+  api.registerPlatform("homebridge-lyrion-control", "LMSPlatform", LMSPlatform);
 };
+
+// ─────────────────────────────────────────────────────────────────
+// PLATFORM
+// ─────────────────────────────────────────────────────────────────
 
 class LMSPlatform {
   constructor(log, config, api) {
     this.log = log;
-    this.config = config || {};
+    this.config = config;
     this.api = api;
+    this.accessories = [];
 
-    this.host = config.host || '192.168.0.25';
-    this.port = config.port || 9000;
-    this.baseUrl = `http://${this.host}:${this.port}`;
+    if (!config || !config.serverurl) {
+      this.log.error("LMSPlatform: 'serverurl' is required – plugin will not start.");
+      this.log.error("Configure the plugin via the Homebridge UI or add serverurl to config.json.");
+      return;
+    }
 
-    this.pollInterval = config.pollInterval || 15000;
+    this.serverurl = config.serverurl.replace(/\/$/, "");
+    this.debug = config.debug || false;
+    this.updateInterval = (config.updateInterval || 5) * 1000;
 
-    // Map<playerid, accessory>
-    this.accessories = new Map();
-    this.statusTimers = new Map();
+    this.log.info(`LMS Platform initialised → ${this.serverurl}`);
 
-    this.log(`LMS Platform initialised at ${this.baseUrl}`);
-
-    api.on('didFinishLaunching', () => {
-      this.log('LMS Platform finished launching');
+    this.api.on("didFinishLaunching", () => {
+      this.log.info("Homebridge ready – discovering LMS players…");
       this.discoverPlayers();
-      this.pollTimer = setInterval(
-        () => this.discoverPlayers(),
-        this.pollInterval
-      );
     });
   }
 
-  /* ---------- Cached accessories ---------- */
-  configureAccessory(accessory) {
-    let playerid = accessory.context?.playerid;
-    if (!playerid) {
-      this.log.warn(`Cached accessory ${accessory.displayName} missing playerid`);
-      return;
-    }
+  // ── Discover / register players ──────────────────────────────────
 
-    playerid = playerid.toLowerCase().trim();
-    accessory.context.playerid = playerid;
-
-    this.log(`Loaded cached accessory: ${accessory.displayName}`);
-    this.accessories.set(playerid, accessory);
-
-    this.setupAccessory(accessory);
-  }
-
-  /* ---------- Discovery ---------- */
   async discoverPlayers() {
+    let players;
     try {
-      const data = await this.lmsRequest('', ['players', 0, 50]);
-      const players = data?.result?.players_loop || [];
-
-      this.log.debug(`Discovered ${players.length} LMS player(s)`);
-
-      for (const player of players) {
-        if (!player.playerid || !player.name) continue;
-        this.ensureAccessory(player);
-      }
+      players = await this.getPlayers();
     } catch (err) {
-      this.log.error(`Failed to discover players: ${err.message}`);
-    }
-  }
-
-  ensureAccessory(player) {
-    const playerid = player.playerid.toLowerCase().trim();
-
-    // THIS is the critical guard
-    if (this.accessories.has(playerid)) {
+      this.log.error("discoverPlayers: failed to contact LMS –", err.message);
       return;
     }
 
-    const uuid = UUIDGen.generate(`homebridge-lms:${playerid}`);
-    this.log(`Registering new accessory for ${player.name}`);
-
-    const accessory = new this.api.platformAccessory(player.name, uuid);
-    accessory.context.playerid = playerid;
-    accessory.category = Categories.FAN;
-
-    this.accessories.set(playerid, accessory);
-    this.setupAccessory(accessory);
-
-    this.api.registerPlatformAccessories(
-      'homebridge-lms',
-      'LMSPlatform',
-      [accessory]
-    );
-  }
-
-  /* ---------- Accessory setup ---------- */
-  setupAccessory(accessory) {
-    const playerid = accessory.context.playerid;
-
-    /* Accessory Information */
-    let infoService = accessory.getService(Service.AccessoryInformation);
-    if (!infoService) {
-      infoService = accessory.addService(Service.AccessoryInformation);
+    if (!players || players.length === 0) {
+      this.log.warn("No players found. Check LMS is running and serverurl is correct.");
+      return;
     }
 
-    infoService
-      .setCharacteristic(Characteristic.Manufacturer, 'Logitech')
-      .setCharacteristic(Characteristic.Model, 'Squeezebox / LMS')
-      .setCharacteristic(Characteristic.SerialNumber, playerid)
-      .setCharacteristic(Characteristic.FirmwareRevision, '1.0.0');
+    this.log.info(`Discovered ${players.length} player(s)`);
 
-    /* Fanv2 Service */
-    let fanService = accessory.getService(Service.Fanv2);
-    if (!fanService) {
-      fanService = accessory.addService(Service.Fanv2, accessory.displayName);
-    }
+    for (const player of players) {
+      this.log.info(`  • ${player.name}  id=${player.playerid}  model=${player.model}  connected=${player.connected}`);
 
-    /* Active → Play / Pause */
-    fanService.getCharacteristic(Characteristic.Active)
-      .onGet(async () => {
-        try {
-          const data = await this.lmsRequest(playerid, ['mode', '?']);
-          return data?.result?._mode === 'play'
-            ? Characteristic.Active.ACTIVE
-            : Characteristic.Active.INACTIVE;
-        } catch {
-          return Characteristic.Active.INACTIVE;
-        }
-      })
-      .onSet(async (value) => {
-        try {
-          await this.lmsRequest(
-            playerid,
-            [value === Characteristic.Active.ACTIVE ? 'play' : 'pause']
-          );
-        } catch {}
-      });
+      const uuid = this.api.hap.uuid.generate(player.playerid);
+      const existing = this.accessories.find(a => a.UUID === uuid);
 
-    /* RotationSpeed → Volume */
-    fanService.getCharacteristic(Characteristic.RotationSpeed)
-      .setProps({ minValue: 0, maxValue: 100, minStep: 1 })
-      .onGet(async () => {
-        try {
-          const data = await this.lmsRequest(playerid, ['mixer', 'volume', '?']);
-          return parseInt(data?.result?._volume) || 0;
-        } catch {
-          return 0;
-        }
-      })
-      .onSet(async (value) => {
-        try {
-          await this.lmsRequest(
-            playerid,
-            ['mixer', 'volume', Math.round(value)]
-          );
-        } catch {}
-      });
-
-    this.startPolling(accessory);
-  }
-
-  /* ---------- Status polling ---------- */
-  startPolling(accessory) {
-    const playerid = accessory.context.playerid;
-
-    if (this.statusTimers.has(playerid)) {
-      clearInterval(this.statusTimers.get(playerid));
-    }
-
-    const fanService = accessory.getService(Service.Fanv2);
-    if (!fanService) return;
-
-    const timer = setInterval(async () => {
-      try {
-        const data = await this.lmsRequest(playerid, ['status', '-', 1]);
-        const result = data?.result;
-        if (!result) return;
-
-        fanService.getCharacteristic(Characteristic.Active)
-          .updateValue(
-            result.mode === 'play'
-              ? Characteristic.Active.ACTIVE
-              : Characteristic.Active.INACTIVE
-          );
-
-        if (result['mixer volume'] !== undefined) {
-          fanService.getCharacteristic(Characteristic.RotationSpeed)
-            .updateValue(parseInt(result['mixer volume']));
-        }
-      } catch {
-        // never break Homebridge
+      if (existing) {
+        this.log.debug(`Restoring cached accessory: ${player.name}`);
+        new LMSPlayerAccessory(this, existing, player);
+      } else {
+        this.log.info(`Registering new accessory: ${player.name}`);
+        const acc = new this.api.platformAccessory(player.name, uuid, Categories.SPEAKER);
+        acc.context.player = player;
+        new LMSPlayerAccessory(this, acc, player);
+        this.api.registerPlatformAccessories("homebridge-lyrion-control", "LMSPlatform", [acc]);
+        this.accessories.push(acc);
       }
-    }, 5000);
-
-    this.statusTimers.set(playerid, timer);
+    }
   }
 
-  /* ---------- LMS RPC ---------- */
-  async lmsRequest(playerid, command) {
-    const payload = {
-      id: 1,
-      method: 'slim.request',
-      params: [playerid, command]
-    };
+  // ── LMS JSON-RPC helpers ─────────────────────────────────────────
 
-    const response = await axios.post(
-      `${this.baseUrl}/jsonrpc.js`,
-      payload,
-      { timeout: 5000 }
-    );
+  async getPlayers() {
+    const result = await this.command("", ["players", 0, 99]);
+    if (!result || !result.players_loop) return [];
+    return result.players_loop.map(p => ({
+      playerid: p.playerid,
+      name: p.name,
+      model: p.model || "squeezelite",
+      connected: p.connected === 1,
+    }));
+  }
 
-    return response.data;
+  async command(playerid, args) {
+    const rpc = { id: 1, method: "slim.request", params: [playerid, args] };
+    try {
+      const res = await axios.post(`${this.serverurl}/jsonrpc.js`, rpc, { timeout: 4000 });
+      if (this.debug) this.log.debug(`RPC [${playerid || "server"}] ${args[0]}:`, JSON.stringify(res.data?.result));
+      return res.data?.result ?? null;
+    } catch (err) {
+      if (this.debug) this.log.error(`RPC error [${playerid}] ${args[0]}:`, err.message);
+      return null;
+    }
+  }
+
+  // ── Required by Homebridge – called for every cached accessory ───
+
+  configureAccessory(accessory) {
+    this.log.debug(`Loading cached accessory: ${accessory.displayName}`);
+    this.accessories.push(accessory);
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────
+// PLAYER ACCESSORY
+// ─────────────────────────────────────────────────────────────────
+
+class LMSPlayerAccessory {
+  constructor(platform, accessory, player) {
+    this.platform = platform;
+    this.accessory = accessory;
+    this.player = player;
+    this.log = platform.log;
+
+    // Cached state – kept fresh by polling, read instantly on onGet
+    this._playing = false;
+    this._paused = false;
+    this._volume = 50;
+
+    this.accessory.context.player = player;
+
+    // ── Accessory Information ────────────────────────────────────
+    (this.accessory.getService(Service.AccessoryInformation)
+      || this.accessory.addService(Service.AccessoryInformation))
+      .setCharacteristic(Characteristic.Manufacturer, "Lyrion / Logitech")
+      .setCharacteristic(Characteristic.Model, player.model || "Squeezelite")
+      .setCharacteristic(Characteristic.SerialNumber, player.playerid)
+      .setCharacteristic(Characteristic.Name, player.name);
+
+    // ── Fan v2: Active = play/stop, RotationSpeed = volume ───────
+    // Siri commands: "Turn on [name]" → play, "Turn off [name]" → stop
+    //                "Set [name] to 50%" → volume 50
+    this.fanService = this.accessory.getService(Service.Fanv2)
+      || this.accessory.addService(Service.Fanv2, player.name);
+
+    this.fanService
+      .getCharacteristic(Characteristic.Active)
+      .onGet(this.getActive.bind(this))
+      .onSet(this.setActive.bind(this));
+
+    this.fanService
+      .getCharacteristic(Characteristic.RotationSpeed)
+      .setProps({ minValue: 0, maxValue: 100, minStep: 1 })
+      .onGet(this.getVolume.bind(this))
+      .onSet(this.setVolume.bind(this));
+
+    // ── SmartSpeaker: explicit play / pause / stop ────────────────
+    // iOS 17+ requires ConfiguredName or Siri ignores the service
+    this.speakerService = this.accessory.getService(Service.SmartSpeaker)
+      || this.accessory.addService(Service.SmartSpeaker, `${player.name} Playback`);
+
+    this.speakerService.setCharacteristic(Characteristic.ConfiguredName, player.name);
+
+    this.speakerService
+      .getCharacteristic(Characteristic.CurrentMediaState)
+      .onGet(this.getCurrentMediaState.bind(this));
+
+    this.speakerService
+      .getCharacteristic(Characteristic.TargetMediaState)
+      .onGet(this.getTargetMediaState.bind(this))
+      .onSet(this.setTargetMediaState.bind(this));
+
+    // ── Remove legacy Speaker service if present (migration) ──────
+    const oldSpeaker = this.accessory.getService(Service.Speaker);
+    if (oldSpeaker) {
+      this.log.info(`${player.name}: removing legacy Speaker service`);
+      this.accessory.removeService(oldSpeaker);
+    }
+
+    // Start polling immediately
+    this.updateStatus();
+    this.pollInterval = setInterval(() => this.updateStatus(), this.platform.updateInterval);
+  }
+
+  // ── Fan Active (play / stop) ─────────────────────────────────────
+
+  async getActive() {
+    return this._playing ? 1 : 0; // 1=ACTIVE, 0=INACTIVE
+  }
+
+  async setActive(value) {
+    if (value === 1) {
+      this.log.info(`${this.player.name}: play`);
+      await this.platform.command(this.player.playerid, ["play"]);
+      this._playing = true;
+      this._paused = false;
+    } else {
+      this.log.info(`${this.player.name}: stop`);
+      await this.platform.command(this.player.playerid, ["stop"]);
+      this._playing = false;
+      this._paused = false;
+    }
+    this._syncSpeakerState();
+  }
+
+  // ── Volume via RotationSpeed ─────────────────────────────────────
+
+  async getVolume() {
+    return this._volume;
+  }
+
+  async setVolume(value) {
+    this.log.info(`${this.player.name}: volume → ${value}`);
+    this._volume = value;
+    await this.platform.command(this.player.playerid, ["mixer", "volume", String(value)]);
+  }
+
+  // ── SmartSpeaker media state ─────────────────────────────────────
+
+  async getCurrentMediaState() {
+    return this._currentMediaState();
+  }
+
+  async getTargetMediaState() {
+    return this._targetMediaState();
+  }
+
+  async setTargetMediaState(value) {
+    if (value === TargetMediaState.PLAY) {
+      this.log.info(`${this.player.name}: play (SmartSpeaker)`);
+      await this.platform.command(this.player.playerid, ["play"]);
+      this._playing = true;
+      this._paused = false;
+    } else if (value === TargetMediaState.PAUSE) {
+      this.log.info(`${this.player.name}: pause`);
+      await this.platform.command(this.player.playerid, ["pause", "1"]);
+      this._playing = false;
+      this._paused = true;
+    } else {
+      this.log.info(`${this.player.name}: stop (SmartSpeaker)`);
+      await this.platform.command(this.player.playerid, ["stop"]);
+      this._playing = false;
+      this._paused = false;
+    }
+    this._syncFanState();
+  }
+
+  // ── Status polling ───────────────────────────────────────────────
+
+  async updateStatus() {
+    const status = await this.platform.command(this.player.playerid, ["status", "-", 1, "tags:al"]);
+    if (!status) return;
+
+    const mode = status.mode || "stop";
+    this._playing = mode === "play";
+    this._paused = mode === "pause";
+
+    if (status.mixer_volume !== undefined) {
+      const vol = parseInt(status.mixer_volume);
+      this._volume = Math.max(0, Math.min(100, isNaN(vol) ? 0 : vol));
+    }
+
+    // Push updates to HomeKit (no-op if value unchanged)
+    this.fanService
+      .getCharacteristic(Characteristic.Active)
+      .updateValue(this._playing ? 1 : 0);
+
+    this.fanService
+      .getCharacteristic(Characteristic.RotationSpeed)
+      .updateValue(this._volume);
+
+    this.speakerService
+      .getCharacteristic(Characteristic.CurrentMediaState)
+      .updateValue(this._currentMediaState());
+
+    if (this.platform.debug && status.playlist_loop?.[0]) {
+      const t = status.playlist_loop[0];
+      this.log.debug(`${this.player.name} ▶ ${t.artist || "?"} – ${t.title || "?"}`);
+    }
+  }
+
+  // ── Internal helpers ─────────────────────────────────────────────
+
+  _currentMediaState() {
+    if (this._playing) return CurrentMediaState.PLAYING;
+    if (this._paused)  return CurrentMediaState.PAUSED;
+    return CurrentMediaState.STOPPED;
+  }
+
+  _targetMediaState() {
+    if (this._playing) return TargetMediaState.PLAY;
+    if (this._paused)  return TargetMediaState.PAUSE;
+    return TargetMediaState.STOP;
+  }
+
+  _syncSpeakerState() {
+    this.speakerService
+      .getCharacteristic(Characteristic.CurrentMediaState)
+      .updateValue(this._currentMediaState());
+  }
+
+  _syncFanState() {
+    this.fanService
+      .getCharacteristic(Characteristic.Active)
+      .updateValue(this._playing ? 1 : 0);
   }
 }

@@ -1,28 +1,42 @@
 {
-  "name": "homebridge-lms",
-  "version": "0.1.0",
-  "description": "Homebridge plugin for Lyrion Music Server (LMS / Logitech Media Server)",
+  "name": "homebridge-lyrion-control",
+  "displayName": "Homebridge Lyrion Control",
+  "version": "2.1.0",
+  "description": "Homebridge platform plugin for Lyrion Media Server (LMS) – auto-discovers players, exposes Fan (volume) and SmartSpeaker (play/pause/stop) for Siri and automations",
   "main": "index.js",
+  "scripts": {
+    "test": "echo \"No tests yet\""
+  },
   "keywords": [
     "homebridge-plugin",
     "homebridge",
-    "lyrion",
-    "lms",
-    "logitech",
     "squeezebox",
-    "audio"
+    "lms",
+    "logitech-media-server",
+    "lyrion",
+    "lyrion-media-server",
+    "speaker",
+    "music"
   ],
-  "engines": {
-    "homebridge": ">=1.6.0",
-    "node": ">=18.0.0"
-  },
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/nilthing9/homebridge-lms.git"
-  },
   "author": "nilthing9",
   "license": "MIT",
+  "homepage": "https://github.com/nilthing9/homebridge-lyrion-control#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nilthing9/homebridge-lyrion-control.git"
+  },
+  "bugs": {
+    "url": "https://github.com/nilthing9/homebridge-lyrion-control/issues"
+  },
+  "engines": {
+    "homebridge": ">=2.0.0-beta.0",
+    "node": ">=18.0.0"
+  },
+  "files": [
+    "index.js",
+    "config.schema.json"
+  ],
   "dependencies": {
-    "axios": "^1.6.0"
+    "axios": "^1.6.7"
   }
 }
