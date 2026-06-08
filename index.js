@@ -198,6 +198,10 @@ class LMSPlayerAccessory {
       this.accessory.removeService(oldSpeaker);
     }
 
+    // Offline tracking for backoff
+    this._offlineCount = 0;       // consecutive failed polls
+    this._isOffline = false;       // currently marked offline
+
     // Start polling immediately
     this.updateStatus();
     this.pollInterval = setInterval(() => this.updateStatus(), this.platform.updateInterval);
@@ -269,8 +273,34 @@ class LMSPlayerAccessory {
   // ── Status polling ───────────────────────────────────────────────
 
   async updateStatus() {
+    // Backoff: skip this poll if player is offline and not due a retry yet
+    if (this._isOffline) {
+      this._offlineSkipCount = (this._offlineSkipCount || 0) + 1;
+      // Retry every ~30s (6 × 5s polls). Reset counter and actually poll.
+      if (this._offlineSkipCount < 6) return;
+      this._offlineSkipCount = 0;
+    }
+
     const status = await this.platform.command(this.player.playerid, ["status", "-", 1, "tags:al"]);
-    if (!status) return;
+
+    if (!status) {
+      // Poll failed — track consecutive failures
+      this._offlineCount = (this._offlineCount || 0) + 1;
+      if (!this._isOffline && this._offlineCount >= 3) {
+        // 3 consecutive failures → mark offline, log once
+        this._isOffline = true;
+        this._offlineSkipCount = 0;
+        this.log.warn(`${this.player.name}: player appears offline, reducing poll rate`);
+      }
+      return;
+    }
+
+    // Successful poll — check if we're recovering from offline
+    if (this._isOffline) {
+      this.log.info(`${this.player.name}: player back online`);
+    }
+    this._offlineCount = 0;
+    this._isOffline = false;
 
     const mode = status.mode || "stop";
     this._playing = mode === "play";
