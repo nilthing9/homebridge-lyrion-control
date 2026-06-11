@@ -18,7 +18,10 @@
     "speaker",
     "music"
   ],
-  "author": "nilthing9",
+  "author": {
+    "name": "nilthing9",
+    "url": "https://github.com/nilthing9"
+  },
   "license": "MIT",
   "homepage": "https://github.com/nilthing9/homebridge-lyrion-control#readme",
   "repository": {
