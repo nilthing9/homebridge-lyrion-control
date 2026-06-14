@@ -19,9 +19,6 @@
 
 const axios = require("axios");
 
-// HAP media state constants (safe across all HAP versions)
-const CurrentMediaState = { PLAYING: 0, PAUSED: 1, STOPPED: 2, LOADING: 3, INTERRUPTION: 4 };
-const TargetMediaState  = { PLAY: 0, PAUSE: 1, STOP: 2 };
 
 let Service, Characteristic, Categories;
 
@@ -175,27 +172,16 @@ class LMSPlayerAccessory {
       .onGet(this.getVolume.bind(this))
       .onSet(this.setVolume.bind(this));
 
-    // ── SmartSpeaker: explicit play / pause / stop ────────────────
-    // iOS 17+ requires ConfiguredName or Siri ignores the service
-    this.speakerService = this.accessory.getService(Service.SmartSpeaker)
-      || this.accessory.addService(Service.SmartSpeaker, `${player.name} Playback`);
-
-    this.speakerService.setCharacteristic(Characteristic.ConfiguredName, player.name);
-
-    this.speakerService
-      .getCharacteristic(Characteristic.CurrentMediaState)
-      .onGet(this.getCurrentMediaState.bind(this));
-
-    this.speakerService
-      .getCharacteristic(Characteristic.TargetMediaState)
-      .onGet(this.getTargetMediaState.bind(this))
-      .onSet(this.setTargetMediaState.bind(this));
-
-    // ── Remove legacy Speaker service if present (migration) ──────
+    // ── Remove any legacy services from previous versions ────────
     const oldSpeaker = this.accessory.getService(Service.Speaker);
     if (oldSpeaker) {
       this.log.info(`${player.name}: removing legacy Speaker service`);
       this.accessory.removeService(oldSpeaker);
+    }
+    const oldSmartSpeaker = this.accessory.getService(Service.SmartSpeaker);
+    if (oldSmartSpeaker) {
+      this.log.info(`${player.name}: removing SmartSpeaker service`);
+      this.accessory.removeService(oldSmartSpeaker);
     }
 
     // Offline tracking for backoff
@@ -242,33 +228,6 @@ class LMSPlayerAccessory {
 
   // ── SmartSpeaker media state ─────────────────────────────────────
 
-  async getCurrentMediaState() {
-    return this._currentMediaState();
-  }
-
-  async getTargetMediaState() {
-    return this._targetMediaState();
-  }
-
-  async setTargetMediaState(value) {
-    if (value === TargetMediaState.PLAY) {
-      this.log.info(`${this.player.name}: play (SmartSpeaker)`);
-      await this.platform.command(this.player.playerid, ["play"]);
-      this._playing = true;
-      this._paused = false;
-    } else if (value === TargetMediaState.PAUSE) {
-      this.log.info(`${this.player.name}: pause`);
-      await this.platform.command(this.player.playerid, ["pause", "1"]);
-      this._playing = false;
-      this._paused = true;
-    } else {
-      this.log.info(`${this.player.name}: stop (SmartSpeaker)`);
-      await this.platform.command(this.player.playerid, ["stop"]);
-      this._playing = false;
-      this._paused = false;
-    }
-    this._syncFanState();
-  }
 
   // ── Status polling ───────────────────────────────────────────────
 
@@ -320,10 +279,6 @@ class LMSPlayerAccessory {
       .getCharacteristic(Characteristic.RotationSpeed)
       .updateValue(this._volume);
 
-    this.speakerService
-      .getCharacteristic(Characteristic.CurrentMediaState)
-      .updateValue(this._currentMediaState());
-
     if (this.platform.debug && status.playlist_loop?.[0]) {
       const t = status.playlist_loop[0];
       this.log.debug(`${this.player.name} ▶ ${t.artist || "?"} – ${t.title || "?"}`);
@@ -331,24 +286,6 @@ class LMSPlayerAccessory {
   }
 
   // ── Internal helpers ─────────────────────────────────────────────
-
-  _currentMediaState() {
-    if (this._playing) return CurrentMediaState.PLAYING;
-    if (this._paused)  return CurrentMediaState.PAUSED;
-    return CurrentMediaState.STOPPED;
-  }
-
-  _targetMediaState() {
-    if (this._playing) return TargetMediaState.PLAY;
-    if (this._paused)  return TargetMediaState.PAUSE;
-    return TargetMediaState.STOP;
-  }
-
-  _syncSpeakerState() {
-    this.speakerService
-      .getCharacteristic(Characteristic.CurrentMediaState)
-      .updateValue(this._currentMediaState());
-  }
 
   _syncFanState() {
     this.fanService

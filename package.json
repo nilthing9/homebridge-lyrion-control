@@ -1,7 +1,7 @@
 {
   "name": "homebridge-lyrion-control",
   "displayName": "Homebridge Lyrion Control",
-  "version": "2.1.0",
+  "version": "2.1.1",
   "description": "Homebridge platform plugin for Lyrion Media Server (LMS) – auto-discovers players, exposes Fan (volume) and SmartSpeaker (play/pause/stop) for Siri and automations",
   "main": "index.js",
   "scripts": {
