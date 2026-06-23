@@ -211,7 +211,6 @@ class LMSPlayerAccessory {
       this._playing = false;
       this._paused = false;
     }
-    this._syncSpeakerState();
   }
 
   // ── Volume via RotationSpeed ─────────────────────────────────────
@@ -226,7 +225,6 @@ class LMSPlayerAccessory {
     await this.platform.command(this.player.playerid, ["mixer", "volume", String(value)]);
   }
 
-  // ── SmartSpeaker media state ─────────────────────────────────────
 
 
   // ── Status polling ───────────────────────────────────────────────
